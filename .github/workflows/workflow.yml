@@ -150,9 +150,69 @@ jobs:
           git config user.email "actions@github.com"
           git tag ${{ steps.version.outputs.version }}
           git push origin ${{ steps.version.outputs.version }}
-          
 
-      # 9. Upload all binaries to the release
+      # 9. Generate release notes
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          PREV_TAG=$(git tag --sort=-version:refname | sed -n 2p || echo "")
+          VERSION="${{ steps.version.outputs.version }}"
+          NOTES="docs/RELEASE_NOTES.md"
+          mkdir -p docs
+          echo "# Release $VERSION" > "$NOTES"
+          echo "" >> "$NOTES"
+          
+          # Helper function to add a section if it has content
+          add_section() {
+            local title="$1"
+            local pattern="$2"
+            local result
+            if [ -z "$PREV_TAG" ]; then
+              result=$(git log --pretty=format:"- %s" | grep -E "$pattern" || echo "")
+            else
+              result=$(git log "$PREV_TAG..HEAD" --pretty=format:"- %s" | grep -E "$pattern" || echo "")
+            fi
+          
+            if [ ! -z "$result" ]; then
+              echo "## $title" >> "$NOTES"
+              echo "$result" >> "$NOTES"
+              echo "" >> "$NOTES"
+            fi
+          }
+          
+          # Sections
+          add_section "🚨 Breaking Changes" "!:|BREAKING CHANGE"
+          add_section "✨ Features" "^feat"
+          add_section "🐛 Bug Fixes" "^fix"
+          
+          # Minor Changes (catch-all for everything else)
+          if [ -z "$PREV_TAG" ]; then
+            MINOR=$(git log --pretty=format:"- %s" | grep -Ev "^(feat|fix)|!:|BREAKING CHANGE" || echo "")
+          else
+            MINOR=$(git log "$PREV_TAG..HEAD" --pretty=format:"- %s" | grep -Ev "^(feat|fix)|!:|BREAKING CHANGE" || echo "")
+          fi
+          if [ ! -z "$MINOR" ]; then
+            echo "## 🔧 Minor Changes" >> "$NOTES"
+            echo "$MINOR" >> "$NOTES"
+            echo "" >> "$NOTES"
+          fi
+          
+          echo "Release notes generated at $NOTES"
+
+      # 10. Create GitHub release
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          release_name: Release ${{ steps.version.outputs.version }}
+          body_path: docs/RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 11. Upload all binaries to the release
       - name: Upload release assets
         run: |
           for file in dist/*; do
