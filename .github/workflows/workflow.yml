@@ -1,0 +1,152 @@
+name: Auto Semantic Release
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - docs/**
+      - README.md
+      - .gitignore
+      - main/install.sh
+      - main/install.ps1
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      # 1. Checkout code
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # 2. Setup Go
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      # 3. Analyze last commit to determine version bump
+      - name: Get commit message
+        id: commit
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          echo "Last commit: $COMMIT_MSG"
+
+          COMMIT_MSG_LOWER=$(echo "$COMMIT_MSG" | tr '[:upper:]' '[:lower:]')
+
+          if [[ "$COMMIT_MSG_LOWER" =~ ^feat: ]]; then
+            echo "bump=minor" >> $GITHUB_OUTPUT
+          elif [[ "$COMMIT_MSG_LOWER" =~ ^fix: ]]; then
+            echo "bump=patch" >> $GITHUB_OUTPUT
+          elif [[ "$COMMIT_MSG_LOWER" =~ ^breaking\ change:|! ]]; then
+            echo "bump=major" >> $GITHUB_OUTPUT
+          else
+            echo "bump=patch" >> $GITHUB_OUTPUT
+          fi
+
+      # 4. Calculate new version
+      - name: Calculate version
+        id: version
+        env:
+          BUMP: ${{ steps.commit.outputs.bump }}
+        run: |
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          VERSION=${LATEST#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          case "$BUMP" in
+            "major")
+              NEW_VERSION="v$((MAJOR + 1)).0.0"
+              ;;
+            "minor")
+              NEW_VERSION="v$MAJOR.$((MINOR + 1)).0"
+              ;;
+            "patch")
+              NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
+              ;;
+          esac
+
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version will be: $NEW_VERSION"
+
+      # 5. Create build directory
+      - name: Create build directory
+        run: mkdir -p dist
+
+      # 6. Build binaries for multiple platforms
+      - name: Build and package
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CTL_NAME="portkill"
+
+          build_target() {
+            local os=$1
+            local arch=$2
+            local target="${os}-${arch}"
+
+            echo "Building $os/$arch..."
+
+            if [ "$os" = "windows" ]; then
+              local binary_name="${CTL_NAME}.exe"
+              local archive_name="${CTL_NAME}-${target}.zip"
+
+              GOOS=$os GOARCH=$arch go build \
+                -ldflags "-X github.com/khanalsaroj/portkill/internal/version.Version=$VERSION" \
+                -o "dist/$binary_name" \
+                ./
+
+              (cd dist && zip "$archive_name" "$binary_name" && rm "$binary_name")
+            else
+              local binary_name="${CTL_NAME}"
+              local archive_name="${CTL_NAME}-${target}.tar.gz"
+
+              GOOS=$os GOARCH=$arch go build \
+                -ldflags "-X github.com/khanalsaroj/portkill/internal/version.Version=$VERSION" \
+                -o "dist/$binary_name" \
+                ./
+
+              (cd dist && tar -czf "$archive_name" "$binary_name" && rm "$binary_name")
+            fi
+
+            echo "✓ Created $archive_name"
+          }
+
+          # Linux
+          build_target "linux" "amd64"
+          build_target "linux" "arm64"
+          build_target "linux" "386"
+
+          # macOS
+          build_target "darwin" "amd64"
+          build_target "darwin" "arm64"
+
+          # Windows
+          build_target "windows" "amd64"
+          build_target "windows" "arm64"
+          build_target "windows" "386"
+
+          # FreeBSD
+          build_target "freebsd" "amd64"
+          build_target "freebsd" "arm64"
+
+          echo "Build complete!"
+          ls -lh dist/
+
+      # 7. Generate checksums
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      # 8. Create git tag
+      - name: Create tag
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git tag ${{ steps.version.outputs.version }}
+          git push origin ${{ steps.version.outputs.version }}

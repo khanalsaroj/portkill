@@ -1,0 +1,15 @@
+# Compiled binaries
+portkill
+portkill.exe
+dist/
+
+# Go toolchain
+*.test
+*.out
+vendor/
+
+# OS artefacts
+.DS_Store
+Thumbs.db
+
+.idea
