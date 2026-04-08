@@ -1,6 +1,39 @@
-# portkill
+# Port kill
 A simple, cross-platform CLI tool to find and kill processes listening on specific ports.
-## Usage
+Tired of killing ports manually using long commands? No more `netstat`, `lsof`, or hunting for PIDs.
+Try `portkill`!
+
+---
+
+## The Problem
+
+Killing a port usually looks like this:
+
+### Windows
+
+```bash
+netstat -ano | findstr :<PORT>
+taskkill /PID <PID> /F
+```
+
+### macOS /  Linux
+
+```bash
+lsof -i :<PORT>
+kill -9 <PID>
+```
+
+Or:
+
+```bash
+ss -lptn 'sport = :8080'
+```
+
+👉 Too many steps
+👉 Too much time wasted
+👉 Easy to mess up
+
+## Just run
 
 ```bash
 # Kill a single port
@@ -20,6 +53,8 @@ portkill kill 3000 8080 9090
   →  scanning port 3000 ...
   ℹ  port 3000 is not in use
 ```
+
+---
 
 ## Installation
 
@@ -55,3 +90,13 @@ page.
 
 > **Elevated permissions** — killing processes owned by other users or system
 > processes requires `sudo` on Unix or an Administrator prompt on Windows.
+
+---
+
+##  Features
+
+*  Kill any port instantly
+*  Cross-platform (Windows, macOS, Linux)
+*  Fast and lightweight
+*  Automatically finds and kills the process
+*  Supports multiple ports
