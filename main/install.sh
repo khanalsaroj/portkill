@@ -1,195 +1,202 @@
 #!/usr/bin/env bash
-# =============================================================================
-# install.sh — portkill installer for macOS and Linux
-# =============================================================================
-
 set -euo pipefail
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 
-REPO="khanalsaroj/portkill"
-BINARY_NAME="portkill"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+# ---------- Core Identity ----------
+APP_NAME="portkill"
+CTL_NAME="portkill"
+GITHUB_ORG="khanalsaroj"
+CTL_REPO="portkill"
 
-# ---------------------------------------------------------------------------
-# Colour helpers (degrade gracefully when not in a terminal)
-# ---------------------------------------------------------------------------
+# ---------- Paths (IMPORTANT SEPARATION) ----------
+BIN_DIR="/usr/local/bin"
+APP_HOME="/opt/${APP_NAME}"
 
-if [ -t 1 ]; then
-  RED="\033[0;31m"
-  GREEN="\033[0;32m"
-  YELLOW="\033[0;33m"
-  CYAN="\033[0;36m"
-  BOLD="\033[1m"
-  RESET="\033[0m"
-else
-  RED="" GREEN="" YELLOW="" CYAN="" BOLD="" RESET=""
-fi
 
-info()    { printf "  ${CYAN}→${RESET}  %s\n" "$*"; }
-success() { printf "  ${GREEN}✓${RESET}  %s\n" "$*"; }
-warn()    { printf "  ${YELLOW}⚠${RESET}  %s\n" "$*" >&2; }
-die()     { printf "  ${RED}✗${RESET}  %s\n" "$*" >&2; exit 1; }
-header()  { printf "\n${BOLD}%s${RESET}\n" "$*"; }
 
-# ---------------------------------------------------------------------------
-# Preflight checks
-# ---------------------------------------------------------------------------
+# -------- ASCII Art & Branding --------
+show_banner() {
+  cat <<"CONFIGEOF"
 
-header "portkill installer"
+    ░█▀█░█▀█░█▀▄░▀█▀░█░█░▀█▀░█░░░█░░
+    ░█▀▀░█░█░█▀▄░░█░░█▀▄░░█░░█░░░█░░
+    ░▀░░░▀▀▀░▀░▀░░▀░░▀░▀░▀▀▀░▀▀▀░▀▀▀
 
-# Require bash 4+ (for associative arrays used below) or simply POSIX tools.
-command -v curl  >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
-  || die "curl or wget is required but neither was found."
+     🌟 Installation System | v1.0.0 🌟
 
-# ---------------------------------------------------------------------------
-# Detect OS and architecture
-# ---------------------------------------------------------------------------
-
-detect_platform() {
-  local os arch
-
-  case "$(uname -s)" in
-    Linux*)   os="linux"   ;;
-    Darwin*)  os="darwin"  ;;
-    FreeBSD*) os="freebsd" ;;
-    *)        die "Unsupported OS: $(uname -s). Use install.ps1 on Windows." ;;
-  esac
-
-  case "$(uname -m)" in
-    x86_64 | amd64)  arch="amd64" ;;
-    arm64  | aarch64) arch="arm64" ;;
-    armv7l)           arch="arm"   ;;
-    *)                die "Unsupported architecture: $(uname -m)" ;;
-  esac
-
-  echo "${os}-${arch}"
+CONFIGEOF
 }
 
-PLATFORM="$(detect_platform)"
-info "Detected platform: ${PLATFORM}"
+# ---------- Versioning ----------
+DEFAULT_VERSION="latest"
+MIN_BASH_VERSION=4
+SUPPORTED_OS=("linux" "darwin")
 
-# ---------------------------------------------------------------------------
-# Resolve the version to install
-# ---------------------------------------------------------------------------
+# ---------- Logging ----------
+info()    { printf "%s\n" "$*"; }
+success() { printf "[OK]   %s\n" "$*"; }
+error()   { printf "[ERR]  %s\n" "$*" >&2; exit 1; }
 
+# ---------- Preconditions ----------
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || error "Missing required command: $1"
+}
+
+check_bash() {
+  (( BASH_VERSINFO[0] >= MIN_BASH_VERSION )) || \
+    error "Bash ${MIN_BASH_VERSION}+ required"
+}
+
+require_root() {
+  [[ "$(id -u)" -eq 0 ]] || error "Run as root (use sudo)"
+}
+
+require_docker() {
+  command -v docker >/dev/null 2>&1 || error "Docker is not installed. Please install Docker."
+
+  if ! docker info >/dev/null 2>&1; then
+    error "Docker daemon is not running. Start Docker before proceeding."
+  fi
+}
+
+
+# ---------- Spinner ----------
+spinner() {
+  local pid=$1
+  local frames='|/-\'
+  local i=0
+
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r[%c] Working..." "${frames:i++%4:1}"
+    sleep 0.1
+  done
+
+  printf "\r[✓] Done            \n"
+}
+
+run_with_spinner() {
+  ("$@" >/dev/null 2>&1) &
+  spinner $!
+}
+
+# ---------- System Detection ----------
+detect_system() {
+  OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  ARCH="$(uname -m)"
+
+  case "$ARCH" in
+    x86_64) ARCH="amd64" ;;
+    arm64|aarch64) ARCH="arm64" ;;
+    *) error "Unsupported architecture: $ARCH" ;;
+  esac
+
+  [[ " ${SUPPORTED_OS[*]} " =~ " ${OS} " ]] || \
+    error "Unsupported OS: $OS"
+}
+
+# ---------- Version Resolution ----------
 resolve_version() {
-  if [ -n "${VERSION:-}" ]; then
-    echo "$VERSION"
+  if [[ "$DEFAULT_VERSION" != "latest" ]]; then
+    echo "$DEFAULT_VERSION"
     return
   fi
 
-  info "Fetching latest release version..."
-
-  local latest_url="https://api.github.com/repos/${REPO}/releases/latest"
-  local version
-
-  if command -v curl >/dev/null 2>&1; then
-    version="$(curl -fsSL "$latest_url" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
-  else
-    version="$(wget -qO- "$latest_url" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
-  fi
-
-  [ -n "$version" ] || die "Could not determine latest release. Set VERSION=vX.Y.Z to install a specific version."
-  echo "$version"
+  curl -sfL \
+    "https://api.github.com/repos/${GITHUB_ORG}/${CTL_REPO}/releases/latest" |
+    grep -o '"tag_name": *"[^"]*"' |
+    cut -d'"' -f4 |
+    sed 's/^v//'
 }
 
-VERSION="$(resolve_version)"
-info "Installing version: ${VERSION}"
 
-# ---------------------------------------------------------------------------
-# Build the download URL
-#
-# Expected GitHub release asset naming convention (set this in your
-# release workflow):
-#   portkill_linux_amd64
-#   portkill_linux_arm64
-#   portkill_darwin_amd64
-#   portkill_darwin_arm64
-# ---------------------------------------------------------------------------
 
-ASSET_NAME="${BINARY_NAME}-${PLATFORM}.tar.gz"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET_NAME}"
+find_binary() {
+  local root="$1"
+  local bin=""
 
-# ---------------------------------------------------------------------------
-# Download
-# ---------------------------------------------------------------------------
+  # Strategy 1: exact match
+  bin="$(find "$root" -type f -name "$CTL_NAME" -print -quit)"
 
-TMP_DIR="$(mktemp -d)"
-TMP_BIN="${TMP_DIR}/${BINARY_NAME}"
-
-# Ensure we clean up the temp directory on exit (success or failure).
-trap 'rm -rf "$TMP_DIR"' EXIT
-
-info "Downloading ${DOWNLOAD_URL} ..."
-
-if command -v curl >/dev/null 2>&1; then
-  curl -fSL --progress-bar "$DOWNLOAD_URL" -o "$TMP_BIN" \
-    || die "Download failed. Check that ${VERSION} exists for platform ${PLATFORM}."
-else
-  wget -q --show-progress "$DOWNLOAD_URL" -O "$TMP_BIN" \
-    || die "Download failed. Check that ${VERSION} exists for platform ${PLATFORM}."
-fi
-
-chmod +x "$TMP_BIN"
-
-# ---------------------------------------------------------------------------
-# Verify the binary runs (smoke test)
-# ---------------------------------------------------------------------------
-
-"$TMP_BIN" --help >/dev/null 2>&1 || "$TMP_BIN" help >/dev/null 2>&1 \
-  || warn "Smoke test inconclusive — the binary may still work."
-
-# ---------------------------------------------------------------------------
-# Install
-# ---------------------------------------------------------------------------
-
-install_binary() {
-  local dest="${INSTALL_DIR}/${BINARY_NAME}"
-
-  # Create the install directory if it doesn't exist (e.g. ~/.local/bin).
-  if [ ! -d "$INSTALL_DIR" ]; then
-    info "Creating install directory: ${INSTALL_DIR}"
-    mkdir -p "$INSTALL_DIR" 2>/dev/null \
-      || sudo mkdir -p "$INSTALL_DIR" \
-      || die "Could not create ${INSTALL_DIR}"
+  # Strategy 2: OS/ARCH suffixed
+  if [[ -z "$bin" ]]; then
+    bin="$(find "$root" -type f -name "${CTL_NAME}-${OS}-${ARCH}" -print -quit)"
   fi
 
-  # Try a direct move first; fall back to sudo if permission is denied.
-  if mv "$TMP_BIN" "$dest" 2>/dev/null; then
-    : # success
-  elif command -v sudo >/dev/null 2>&1; then
-    info "Elevated permissions required — running sudo mv ..."
-    sudo mv "$TMP_BIN" "$dest" \
-      || die "Installation failed even with sudo. Try: INSTALL_DIR=~/.local/bin bash install.sh"
-  else
-    die "Permission denied writing to ${INSTALL_DIR} and sudo is not available.
-Try: INSTALL_DIR=~/.local/bin bash install.sh"
+  # Strategy 3: any executable named like the binary
+  if [[ -z "$bin" ]]; then
+    bin="$(find "$root" -type f -executable -name "*${CTL_NAME}*" -print -quit)"
   fi
 
-  echo "$dest"
+  # Strategy 4: bin/ directory
+  if [[ -z "$bin" && -d "$root/bin" ]]; then
+    bin="$(find "$root/bin" -type f -print -quit)"
+  fi
+
+  # Strategy 5: last resort — first regular file
+  if [[ -z "$bin" ]]; then
+    bin="$(find "$root" -type f -print -quit)"
+  fi
+
+  [[ -n "$bin" ]] || return 1
+  echo "$bin"
 }
 
-INSTALLED_PATH="$(install_binary)"
-success "Installed to ${INSTALLED_PATH}"
 
-# ---------------------------------------------------------------------------
-# PATH check — warn if the install dir isn't on PATH
-# ---------------------------------------------------------------------------
 
-if ! echo ":${PATH}:" | grep -q ":${INSTALL_DIR}:"; then
-  warn "${INSTALL_DIR} is not in your PATH."
-  printf "\n  Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):\n"
-  printf "\n    ${BOLD}export PATH=\"\$PATH:${INSTALL_DIR}\"${RESET}\n\n"
-  printf "  Then reload your shell:\n"
-  printf "\n    ${BOLD}source ~/.bashrc${RESET}  (or open a new terminal)\n\n"
-fi
+# ---------- Main ----------
+main() {
+  show_banner
+  check_bash
+  require_root
+  require_docker
 
-# ---------------------------------------------------------------------------
-# Done
-# ---------------------------------------------------------------------------
+  require_cmd curl
+  require_cmd tar
+  require_cmd install
 
-printf "\n${BOLD}All done!${RESET} Run it:\n\n"
-printf "  ${BOLD}portkill kill 8080${RESET}\n\n"
+  detect_system
+
+  info "Resolving version"
+  VERSION="$(resolve_version)"
+  [[ -n "$VERSION" ]] || error "Failed to resolve version"
+
+  info "Installing ${CTL_NAME} v${VERSION}"
+
+  URL="https://github.com/${GITHUB_ORG}/${CTL_REPO}/releases/download/v${VERSION}/${CTL_NAME}-${OS}-${ARCH}.tar.gz"
+
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
+
+  info "Downloading binary"
+  run_with_spinner curl -fL "$URL" -o "$TMP_DIR/pkg.tar.gz"
+
+  info "Extracting archive"
+  run_with_spinner tar -xzf "$TMP_DIR/pkg.tar.gz" -C "$TMP_DIR"
+
+  info "Locating binary in archive"
+
+  BIN="$(find_binary "$TMP_DIR")" || {
+    error "Failed to locate binary in archive. Contents were: $(find "$TMP_DIR" -type f)"
+  }
+
+  chmod +x "$BIN"
+
+  info "Installing binary to $BIN_DIR"
+  install -m 755 "$BIN" "$BIN_DIR/$CTL_NAME"
+
+  success "Binary: $BIN_DIR/$CTL_NAME"
+  success "App home: $APP_HOME"
+
+  if command -v "$CTL_NAME" >/dev/null 2>&1; then
+      echo ""
+      success "Checking installed version..."
+      $CTL_NAME --version
+  else
+      echo ""
+      error "Installation failed or $CTL_NAME is not in your PATH"
+  fi
+
+  echo "✨ ProtKill Installation Complete! ✨"
+}
+
+main "$@"
