@@ -52,9 +52,10 @@ detect_platform() {
   local os arch
 
   case "$(uname -s)" in
-    Linux*)  os="linux"  ;;
-    Darwin*) os="darwin" ;;
-    *)       die "Unsupported OS: $(uname -s). Use install.ps1 on Windows." ;;
+    Linux*)   os="linux"   ;;
+    Darwin*)  os="darwin"  ;;
+    FreeBSD*) os="freebsd" ;;
+    *)        die "Unsupported OS: $(uname -s). Use install.ps1 on Windows." ;;
   esac
 
   case "$(uname -m)" in
