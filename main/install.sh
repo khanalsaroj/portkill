@@ -65,7 +65,7 @@ detect_platform() {
     *)                die "Unsupported architecture: $(uname -m)" ;;
   esac
 
-  echo "${os}_${arch}"
+  echo "${os}-${arch}"
 }
 
 PLATFORM="$(detect_platform)"
@@ -110,7 +110,7 @@ info "Installing version: ${VERSION}"
 #   portkill_darwin_arm64
 # ---------------------------------------------------------------------------
 
-ASSET_NAME="${BINARY_NAME}_${PLATFORM}"
+ASSET_NAME="${BINARY_NAME}-${PLATFORM}.tar.gz"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET_NAME}"
 
 # ---------------------------------------------------------------------------
