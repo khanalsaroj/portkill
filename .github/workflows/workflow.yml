@@ -97,7 +97,7 @@ jobs:
               GOOS=$os GOARCH=$arch go build \
                 -ldflags "-X github.com/khanalsaroj/portkill/internal/version.Version=$VERSION" \
                 -o "dist/$binary_name" \
-                ./
+                ./cmd/portkill
 
               (cd dist && zip "$archive_name" "$binary_name" && rm "$binary_name")
             else
@@ -107,7 +107,7 @@ jobs:
               GOOS=$os GOARCH=$arch go build \
                 -ldflags "-X github.com/khanalsaroj/portkill/internal/version.Version=$VERSION" \
                 -o "dist/$binary_name" \
-                ./
+                ./cmd/portkill
 
               (cd dist && tar -czf "$archive_name" "$binary_name" && rm "$binary_name")
             fi
