@@ -150,3 +150,14 @@ jobs:
           git config user.email "actions@github.com"
           git tag ${{ steps.version.outputs.version }}
           git push origin ${{ steps.version.outputs.version }}
+          
+
+      # 9. Upload all binaries to the release
+      - name: Upload release assets
+        run: |
+          for file in dist/*; do
+            echo "Uploading $file..."
+            gh release upload ${{ steps.version.outputs.version }} "$file" --clobber
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
