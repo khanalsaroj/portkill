@@ -29,9 +29,9 @@ Or:
 ss -lptn 'sport = :8080'
 ```
 
-👉 Too many steps
-👉 Too much time wasted
-👉 Easy to mess up
+- 👉 Too many steps
+- 👉 Too much time wasted
+- 👉 Easy to mess up
 
 ## Just run
 
