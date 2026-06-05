@@ -1,6 +1,5 @@
 # Binaries and build output
 /portkill
-/portkill.exe
 /bin/
 /dist/
 /build/
