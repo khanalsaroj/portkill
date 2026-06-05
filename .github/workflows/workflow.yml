@@ -111,23 +111,46 @@ jobs:
           set -euo pipefail
           prev="$(git tag --sort=-version:refname | head -1 || true)"
           range=""
-          [ -n "$prev" ] && range="${prev}..HEAD"
+          if [ -n "$prev" ]; then
+            range="${prev}..HEAD"
+          fi
           notes="docs/RELEASE_NOTES.md"
           mkdir -p docs
+
+          # Quote the range only when it is set; passing an empty arg to
+          # `git log` would be treated as an (invalid) revision.
+          log_lines() {
+            if [ -n "$range" ]; then
+              git log "$range" --pretty='- %s'
+            else
+              git log --pretty='- %s'
+            fi
+          }
+
           {
             echo "## portkill ${VERSION}"
             echo ""
+
+            # Using `if` (not `[ ... ] && ...`) keeps the function's exit status
+            # at 0 when a section is empty; otherwise `set -e` would abort here.
             section() {
               local title="$1" pattern="$2" body
-              body="$(git log $range --pretty='- %s' | grep -iE "$pattern" || true)"
-              [ -n "$body" ] && printf '### %s\n%s\n\n' "$title" "$body"
+              body="$(log_lines | grep -iE "$pattern" || true)"
+              if [ -n "$body" ]; then
+                printf '### %s\n%s\n\n' "$title" "$body"
+              fi
             }
+
             section "🚨 Breaking Changes" 'breaking change|!:'
             section "✨ Features" '^- feat'
             section "🐛 Bug Fixes" '^- fix'
-            other="$(git log $range --pretty='- %s' | grep -ivE 'breaking change|!:|^- feat|^- fix' || true)"
-            [ -n "$other" ] && printf '### 🔧 Other Changes\n%s\n' "$other"
+
+            other="$(log_lines | grep -ivE 'breaking change|!:|^- feat|^- fix' || true)"
+            if [ -n "$other" ]; then
+              printf '### 🔧 Other Changes\n%s\n' "$other"
+            fi
           } > "$notes"
+
           cat "$notes"
 
       - name: Publish release
