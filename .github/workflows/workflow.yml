@@ -1,223 +1,140 @@
-name: Auto Semantic Release
+name: Release
 
 on:
   push:
     branches:
       - main
     paths-ignore:
-      - docs/**
-      - README.md
-      - .gitignore
-      - main/install.sh
-      - main/install.ps1
+      - "docs/**"
+      - "**.md"
+      - ".gitignore"
+      - ".golangci.yml"
+      - "main/install.sh"
+      - "main/install.ps1"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-      # 1. Checkout code
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2. Setup Go
-      - name: Setup Go
-        uses: actions/setup-go@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: stable
+          cache: true
 
-      # 3. Analyze last commit to determine version bump
-      - name: Get commit message
-        id: commit
+      # Guard the release behind a green test run.
+      - name: Test
+        run: go test ./...
+
+      # Decide the bump from the latest commit (Conventional Commits).
+      - name: Determine version bump
+        id: bump
         run: |
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          echo "Last commit: $COMMIT_MSG"
-
-          COMMIT_MSG_LOWER=$(echo "$COMMIT_MSG" | tr '[:upper:]' '[:lower:]')
-
-          if [[ "$COMMIT_MSG_LOWER" =~ ^feat: ]]; then
-            echo "bump=minor" >> $GITHUB_OUTPUT
-          elif [[ "$COMMIT_MSG_LOWER" =~ ^fix: ]]; then
-            echo "bump=patch" >> $GITHUB_OUTPUT
-          elif [[ "$COMMIT_MSG_LOWER" =~ ^breaking\ change:|! ]]; then
-            echo "bump=major" >> $GITHUB_OUTPUT
+          msg="$(git log -1 --pretty=%B | tr '[:upper:]' '[:lower:]')"
+          echo "Last commit: $msg"
+          if echo "$msg" | grep -qE '(^|\s)breaking change|!:'; then
+            echo "bump=major" >> "$GITHUB_OUTPUT"
+          elif echo "$msg" | grep -qE '^feat'; then
+            echo "bump=minor" >> "$GITHUB_OUTPUT"
           else
-            echo "bump=patch" >> $GITHUB_OUTPUT
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
           fi
 
-      # 4. Calculate new version
-      - name: Calculate version
+      - name: Calculate next version
         id: version
         env:
-          BUMP: ${{ steps.commit.outputs.bump }}
+          BUMP: ${{ steps.bump.outputs.bump }}
         run: |
-          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          VERSION=${LATEST#v}
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-
+          latest="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
+          ver="${latest#v}"
+          IFS='.' read -r major minor patch <<< "$ver"
           case "$BUMP" in
-            "major")
-              NEW_VERSION="v$((MAJOR + 1)).0.0"
-              ;;
-            "minor")
-              NEW_VERSION="v$MAJOR.$((MINOR + 1)).0"
-              ;;
-            "patch")
-              NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
-              ;;
+            major) next="v$((major + 1)).0.0" ;;
+            minor) next="v${major}.$((minor + 1)).0" ;;
+            patch) next="v${major}.${minor}.$((patch + 1))" ;;
           esac
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "Next version: $next"
 
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "New version will be: $NEW_VERSION"
-
-      # 5. Create build directory
-      - name: Create build directory
-        run: mkdir -p dist
-
-      # 6. Build binaries for multiple platforms
-      - name: Build and package
+      - name: Build & package
+        id: build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          CTL_NAME="portkill"
+          set -euo pipefail
+          mkdir -p dist
+          BIN="portkill"
+          VPKG="github.com/khanalsaroj/portkill/internal/version"
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-s -w -X ${VPKG}.Version=${VERSION} -X ${VPKG}.Commit=${COMMIT} -X ${VPKG}.Date=${DATE}"
 
-          build_target() {
-            local os=$1
-            local arch=$2
-            local target="${os}-${arch}"
-
-            echo "Building $os/$arch..."
-
+          build() {
+            local os="$1" arch="$2" target="${1}-${2}"
+            echo "==> building $target"
             if [ "$os" = "windows" ]; then
-              local binary_name="${CTL_NAME}.exe"
-              local archive_name="${CTL_NAME}-${target}.zip"
-
-              GOOS=$os GOARCH=$arch go build \
-                -ldflags "-X github.com/khanalsaroj/portkill/internal/version.Version=$VERSION" \
-                -o "dist/$binary_name" \
-                ./cmd/portkill
-
-              (cd dist && zip "$archive_name" "$binary_name" && rm "$binary_name")
+              GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$LDFLAGS" -o "dist/${BIN}.exe" ./cmd/portkill
+              (cd dist && zip -q "${BIN}-${target}.zip" "${BIN}.exe" && rm "${BIN}.exe")
             else
-              local binary_name="${CTL_NAME}"
-              local archive_name="${CTL_NAME}-${target}.tar.gz"
-
-              GOOS=$os GOARCH=$arch go build \
-                -ldflags "-X github.com/khanalsaroj/portkill/internal/version.Version=$VERSION" \
-                -o "dist/$binary_name" \
-                ./cmd/portkill
-
-              (cd dist && tar -czf "$archive_name" "$binary_name" && rm "$binary_name")
+              GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$LDFLAGS" -o "dist/${BIN}" ./cmd/portkill
+              (cd dist && tar -czf "${BIN}-${target}.tar.gz" "${BIN}" && rm "${BIN}")
             fi
-
-            echo "✓ Created $archive_name"
           }
 
-          # Linux
-          build_target "linux" "amd64"
-          build_target "linux" "arm64"
-          build_target "linux" "386"
+          build linux   amd64
+          build linux   arm64
+          build linux   386
+          build darwin  amd64
+          build darwin  arm64
+          build freebsd amd64
+          build freebsd arm64
+          build windows amd64
+          build windows arm64
+          build windows 386
 
-          # macOS
-          build_target "darwin" "amd64"
-          build_target "darwin" "arm64"
-
-          # Windows
-          build_target "windows" "amd64"
-          build_target "windows" "arm64"
-          build_target "windows" "386"
-
-          # FreeBSD
-          build_target "freebsd" "amd64"
-          build_target "freebsd" "arm64"
-
-          echo "Build complete!"
+          (cd dist && sha256sum * > checksums.txt)
+          echo "Artifacts:"
           ls -lh dist/
 
-      # 7. Generate checksums
-      - name: Generate checksums
-        run: |
-          cd dist
-          sha256sum * > checksums.txt
-          cat checksums.txt
-
-      # 8. Create git tag
-      - name: Create tag
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git tag ${{ steps.version.outputs.version }}
-          git push origin ${{ steps.version.outputs.version }}
-
-      # 9. Generate release notes
       - name: Generate release notes
-        id: release_notes
+        id: notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          PREV_TAG=$(git tag --sort=-version:refname | sed -n 2p || echo "")
-          VERSION="${{ steps.version.outputs.version }}"
-          NOTES="docs/RELEASE_NOTES.md"
+          set -euo pipefail
+          prev="$(git tag --sort=-version:refname | head -1 || true)"
+          range=""
+          [ -n "$prev" ] && range="${prev}..HEAD"
+          notes="docs/RELEASE_NOTES.md"
           mkdir -p docs
-          echo "# Release $VERSION" > "$NOTES"
-          echo "" >> "$NOTES"
-          
-          # Helper function to add a section if it has content
-          add_section() {
-            local title="$1"
-            local pattern="$2"
-            local result
-            if [ -z "$PREV_TAG" ]; then
-              result=$(git log --pretty=format:"- %s" | grep -E "$pattern" || echo "")
-            else
-              result=$(git log "$PREV_TAG..HEAD" --pretty=format:"- %s" | grep -E "$pattern" || echo "")
-            fi
-          
-            if [ ! -z "$result" ]; then
-              echo "## $title" >> "$NOTES"
-              echo "$result" >> "$NOTES"
-              echo "" >> "$NOTES"
-            fi
-          }
-          
-          # Sections
-          add_section "🚨 Breaking Changes" "!:|BREAKING CHANGE"
-          add_section "✨ Features" "^feat"
-          add_section "🐛 Bug Fixes" "^fix"
-          
-          # Minor Changes (catch-all for everything else)
-          if [ -z "$PREV_TAG" ]; then
-            MINOR=$(git log --pretty=format:"- %s" | grep -Ev "^(feat|fix)|!:|BREAKING CHANGE" || echo "")
-          else
-            MINOR=$(git log "$PREV_TAG..HEAD" --pretty=format:"- %s" | grep -Ev "^(feat|fix)|!:|BREAKING CHANGE" || echo "")
-          fi
-          if [ ! -z "$MINOR" ]; then
-            echo "## 🔧 Minor Changes" >> "$NOTES"
-            echo "$MINOR" >> "$NOTES"
-            echo "" >> "$NOTES"
-          fi
-          
-          echo "Release notes generated at $NOTES"
+          {
+            echo "## portkill ${VERSION}"
+            echo ""
+            section() {
+              local title="$1" pattern="$2" body
+              body="$(git log $range --pretty='- %s' | grep -iE "$pattern" || true)"
+              [ -n "$body" ] && printf '### %s\n%s\n\n' "$title" "$body"
+            }
+            section "🚨 Breaking Changes" 'breaking change|!:'
+            section "✨ Features" '^- feat'
+            section "🐛 Bug Fixes" '^- fix'
+            other="$(git log $range --pretty='- %s' | grep -ivE 'breaking change|!:|^- feat|^- fix' || true)"
+            [ -n "$other" ] && printf '### 🔧 Other Changes\n%s\n' "$other"
+          } > "$notes"
+          cat "$notes"
 
-      # 10. Create GitHub release
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
-          release_name: Release ${{ steps.version.outputs.version }}
+          name: portkill ${{ steps.version.outputs.version }}
           body_path: docs/RELEASE_NOTES.md
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # 11. Upload all binaries to the release
-      - name: Upload release assets
-        run: |
-          for file in dist/*; do
-            echo "Uploading $file..."
-            gh release upload ${{ steps.version.outputs.version }} "$file" --clobber
-          done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: dist/*
+          fail_on_unmatched_files: true

@@ -1,0 +1,26 @@
+# golangci-lint configuration (v1.x).
+# A curated, high-signal set: staticcheck and govet catch real bugs; the rest
+# keep the code tidy. errcheck is intentionally omitted — this is a CLI whose
+# fmt.Fprint* calls to stdout/stderr cannot meaningfully fail.
+run:
+  timeout: 5m
+
+linters:
+  disable-all: true
+  enable:
+    - govet
+    - staticcheck
+    - gosimple
+    - ineffassign
+    - unused
+    - misspell
+    - unconvert
+    - gofmt
+
+linters-settings:
+  misspell:
+    locale: US
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

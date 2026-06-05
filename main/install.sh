@@ -1,202 +1,166 @@
 #!/usr/bin/env bash
+# portkill installer for Linux, macOS and FreeBSD.
+#
+#   curl -fsSL https://raw.githubusercontent.com/khanalsaroj/portkill/main/main/install.sh | bash
+#
+# Environment overrides:
+#   PORTKILL_VERSION       install a specific version (e.g. v1.2.3), default: latest
+#   PORTKILL_INSTALL_DIR   install location, default: /usr/local/bin (falls back to ~/.local/bin)
 set -euo pipefail
 
+REPO="khanalsaroj/portkill"
+BIN_NAME="portkill"
+VERSION="${PORTKILL_VERSION:-latest}"
+INSTALL_DIR="${PORTKILL_INSTALL_DIR:-}"
 
-# ---------- Core Identity ----------
-APP_NAME="portkill"
-CTL_NAME="portkill"
-GITHUB_ORG="khanalsaroj"
-CTL_REPO="portkill"
+# ---------- Output helpers ----------
+info() { printf '  %s\n' "$*"; }
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*" >&2; }
+die()  { printf '  \033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 
-# ---------- Paths (IMPORTANT SEPARATION) ----------
-BIN_DIR="/usr/local/bin"
-APP_HOME="/opt/${APP_NAME}"
+need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
-
-
-# -------- ASCII Art & Branding --------
-show_banner() {
-  cat <<"CONFIGEOF"
-
-    ░█▀█░█▀█░█▀▄░▀█▀░█░█░▀█▀░█░░░█░░
-    ░█▀▀░█░█░█▀▄░░█░░█▀▄░░█░░█░░░█░░
-    ░▀░░░▀▀▀░▀░▀░░▀░░▀░▀░▀▀▀░▀▀▀░▀▀▀
-
-     🌟 Installation System | v1.0.0 🌟
-
-CONFIGEOF
+banner() {
+  printf '\n'
+  printf '    ░█▀█░█▀█░█▀▄░▀█▀░█░█░▀█▀░█░░░█░░\n'
+  printf '    ░█▀▀░█░█░█▀▄░░█░░█▀▄░░█░░█░░░█░░\n'
+  printf '    ░▀░░░▀▀▀░▀░▀░░▀░░▀░▀░▀▀▀░▀▀▀░▀▀▀\n'
+  printf '\n    kill the process holding a port — instantly\n\n'
 }
 
-# ---------- Versioning ----------
-DEFAULT_VERSION="latest"
-MIN_BASH_VERSION=4
-SUPPORTED_OS=("linux" "darwin")
-
-# ---------- Logging ----------
-info()    { printf "%s\n" "$*"; }
-success() { printf "[OK]   %s\n" "$*"; }
-error()   { printf "[ERR]  %s\n" "$*" >&2; exit 1; }
-
-# ---------- Preconditions ----------
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || error "Missing required command: $1"
-}
-
-check_bash() {
-  (( BASH_VERSINFO[0] >= MIN_BASH_VERSION )) || \
-    error "Bash ${MIN_BASH_VERSION}+ required"
-}
-
-require_root() {
-  [[ "$(id -u)" -eq 0 ]] || error "Run as root (use sudo)"
-}
-
-require_docker() {
-  command -v docker >/dev/null 2>&1 || error "Docker is not installed. Please install Docker."
-
-  if ! docker info >/dev/null 2>&1; then
-    error "Docker daemon is not running. Start Docker before proceeding."
-  fi
-}
-
-
-# ---------- Spinner ----------
-spinner() {
-  local pid=$1
-  local frames='|/-\'
-  local i=0
-
-  while kill -0 "$pid" 2>/dev/null; do
-    printf "\r[%c] Working..." "${frames:i++%4:1}"
-    sleep 0.1
-  done
-
-  printf "\r[✓] Done            \n"
-}
-
-run_with_spinner() {
-  ("$@" >/dev/null 2>&1) &
-  spinner $!
-}
-
-# ---------- System Detection ----------
-detect_system() {
+# ---------- Platform detection ----------
+detect_platform() {
   OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
   ARCH="$(uname -m)"
 
-  case "$ARCH" in
-    x86_64) ARCH="amd64" ;;
-    arm64|aarch64) ARCH="arm64" ;;
-    *) error "Unsupported architecture: $ARCH" ;;
+  case "$OS" in
+    linux | darwin | freebsd) ;;
+    *) die "unsupported operating system: $OS" ;;
   esac
 
-  [[ " ${SUPPORTED_OS[*]} " =~ " ${OS} " ]] || \
-    error "Unsupported OS: $OS"
+  case "$ARCH" in
+    x86_64 | amd64) ARCH="amd64" ;;
+    arm64 | aarch64) ARCH="arm64" ;;
+    i386 | i686) ARCH="386" ;;
+    *) die "unsupported architecture: $ARCH" ;;
+  esac
 }
 
-# ---------- Version Resolution ----------
+# ---------- Version resolution ----------
 resolve_version() {
-  if [[ "$DEFAULT_VERSION" != "latest" ]]; then
-    echo "$DEFAULT_VERSION"
+  if [ "$VERSION" != "latest" ]; then
+    printf '%s' "${VERSION#v}"
+    return
+  fi
+  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" |
+    grep -o '"tag_name"[ ]*:[ ]*"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/^v//'
+}
+
+# ---------- Checksum verification (best effort) ----------
+verify_checksum() {
+  local dir="$1" asset="$2" version="$3" tool expected actual
+  if command -v sha256sum >/dev/null 2>&1; then
+    tool="sha256sum"
+  elif command -v shasum >/dev/null 2>&1; then
+    tool="shasum -a 256"
+  else
+    warn "no sha256 tool found — skipping checksum verification"
     return
   fi
 
-  curl -sfL \
-    "https://api.github.com/repos/${GITHUB_ORG}/${CTL_REPO}/releases/latest" |
-    grep -o '"tag_name": *"[^"]*"' |
-    cut -d'"' -f4 |
-    sed 's/^v//'
+  if ! curl -fsSL "https://github.com/${REPO}/releases/download/v${version}/checksums.txt" -o "$dir/checksums.txt"; then
+    warn "checksums.txt unavailable — skipping checksum verification"
+    return
+  fi
+
+  expected="$(awk -v f="$asset" '$2 == f {print $1}' "$dir/checksums.txt" | head -1)"
+  if [ -z "$expected" ]; then
+    warn "no checksum entry for ${asset} — skipping verification"
+    return
+  fi
+  actual="$($tool "$dir/$asset" | awk '{print $1}')"
+  [ "$expected" = "$actual" ] || die "checksum mismatch for ${asset} (expected ${expected}, got ${actual})"
+  ok "checksum verified"
 }
 
-
-
-find_binary() {
-  local root="$1"
-  local bin=""
-
-  # Strategy 1: exact match
-  bin="$(find "$root" -type f -name "$CTL_NAME" -print -quit)"
-
-  # Strategy 2: OS/ARCH suffixed
-  if [[ -z "$bin" ]]; then
-    bin="$(find "$root" -type f -name "${CTL_NAME}-${OS}-${ARCH}" -print -quit)"
+# ---------- Install location ----------
+choose_install_dir() {
+  if [ -n "$INSTALL_DIR" ]; then
+    printf '%s' "$INSTALL_DIR"
+    return
   fi
-
-  # Strategy 3: any executable named like the binary
-  if [[ -z "$bin" ]]; then
-    bin="$(find "$root" -type f -executable -name "*${CTL_NAME}*" -print -quit)"
-  fi
-
-  # Strategy 4: bin/ directory
-  if [[ -z "$bin" && -d "$root/bin" ]]; then
-    bin="$(find "$root/bin" -type f -print -quit)"
-  fi
-
-  # Strategy 5: last resort — first regular file
-  if [[ -z "$bin" ]]; then
-    bin="$(find "$root" -type f -print -quit)"
-  fi
-
-  [[ -n "$bin" ]] || return 1
-  echo "$bin"
+  for d in /usr/local/bin /opt/homebrew/bin; do
+    if [ -d "$d" ]; then
+      printf '%s' "$d"
+      return
+    fi
+  done
+  printf '%s' "$HOME/.local/bin"
 }
 
-
+install_binary() {
+  local src="$1" dir="$2"
+  mkdir -p "$dir" 2>/dev/null || true
+  if [ -w "$dir" ]; then
+    install -m 0755 "$src" "$dir/$BIN_NAME"
+  elif command -v sudo >/dev/null 2>&1; then
+    warn "elevated permissions required to write to ${dir}"
+    sudo install -m 0755 "$src" "$dir/$BIN_NAME"
+  else
+    die "cannot write to ${dir} and sudo is unavailable — set PORTKILL_INSTALL_DIR to a writable directory"
+  fi
+}
 
 # ---------- Main ----------
 main() {
-  show_banner
-  check_bash
-  require_root
-  require_docker
+  banner
+  need curl
+  need tar
+  need uname
 
-  require_cmd curl
-  require_cmd tar
-  require_cmd install
+  detect_platform
 
-  detect_system
+  local version
+  version="$(resolve_version)"
+  [ -n "$version" ] || die "could not resolve the latest version"
+  info "Installing ${BIN_NAME} v${version} for ${OS}/${ARCH}"
 
-  info "Resolving version"
-  VERSION="$(resolve_version)"
-  [[ -n "$VERSION" ]] || error "Failed to resolve version"
+  local tmp asset url
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  asset="${BIN_NAME}-${OS}-${ARCH}.tar.gz"
+  url="https://github.com/${REPO}/releases/download/v${version}/${asset}"
 
-  info "Installing ${CTL_NAME} v${VERSION}"
+  info "Downloading ${url}"
+  curl -fSL "$url" -o "$tmp/$asset" || die "download failed — does a release exist for ${OS}/${ARCH}?"
 
-  URL="https://github.com/${GITHUB_ORG}/${CTL_REPO}/releases/download/v${VERSION}/${CTL_NAME}-${OS}-${ARCH}.tar.gz"
+  verify_checksum "$tmp" "$asset" "$version"
 
-  TMP_DIR="$(mktemp -d)"
-  trap 'rm -rf "$TMP_DIR"' EXIT
+  tar -xzf "$tmp/$asset" -C "$tmp" || die "failed to extract archive"
 
-  info "Downloading binary"
-  run_with_spinner curl -fL "$URL" -o "$TMP_DIR/pkg.tar.gz"
-
-  info "Extracting archive"
-  run_with_spinner tar -xzf "$TMP_DIR/pkg.tar.gz" -C "$TMP_DIR"
-
-  info "Locating binary in archive"
-
-  BIN="$(find_binary "$TMP_DIR")" || {
-    error "Failed to locate binary in archive. Contents were: $(find "$TMP_DIR" -type f)"
-  }
-
-  chmod +x "$BIN"
-
-  info "Installing binary to $BIN_DIR"
-  install -m 755 "$BIN" "$BIN_DIR/$CTL_NAME"
-
-  success "Binary: $BIN_DIR/$CTL_NAME"
-  success "App home: $APP_HOME"
-
-  if command -v "$CTL_NAME" >/dev/null 2>&1; then
-      echo ""
-      success "Checking installed version..."
-      $CTL_NAME --version
-  else
-      echo ""
-      error "Installation failed or $CTL_NAME is not in your PATH"
+  local bin="$tmp/$BIN_NAME"
+  if [ ! -f "$bin" ]; then
+    bin="$(find "$tmp" -type f -name "$BIN_NAME" 2>/dev/null | head -1)"
   fi
+  [ -n "$bin" ] && [ -f "$bin" ] || die "could not find the ${BIN_NAME} binary inside the archive"
+  chmod +x "$bin"
 
-  echo "✨ ProtKill Installation Complete! ✨"
+  local dir
+  dir="$(choose_install_dir)"
+  install_binary "$bin" "$dir"
+
+  hash -r 2>/dev/null || true
+  if command -v "$BIN_NAME" >/dev/null 2>&1; then
+    ok "installed: $(command -v "$BIN_NAME")"
+    "$BIN_NAME" version || true
+  else
+    ok "installed to ${dir}/${BIN_NAME}"
+    warn "${dir} is not on your PATH yet. Add it with:"
+    warn "    export PATH=\"${dir}:\$PATH\""
+  fi
+  printf '\n'
+  ok "Done! Try:  portkill kill 8080"
 }
 
 main "$@"

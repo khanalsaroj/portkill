@@ -1,10 +1,35 @@
-# Go toolchain
+# Binaries and build output
+/portkill
+/portkill.exe
+/bin/
+/dist/
+/build/
+
+# Go test, coverage, and profiling output
 *.test
 *.out
-vendor/
+coverage.*
+*.coverprofile
+*.prof
 
-# OS artefacts
+# Generated at release time
+/docs/RELEASE_NOTES.md
+
+# Dependency caches vendored locally
+/vendor/
+
+# Logs and local environment files
+*.log
+.env
+.env.*
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS artifacts
 .DS_Store
 Thumbs.db
-
-.idea
+desktop.ini
